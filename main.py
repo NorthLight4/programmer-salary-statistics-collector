@@ -6,49 +6,41 @@ from dotenv import load_dotenv
 from terminaltables import SingleTable
 
 
-def predict_rub_salary_hh(vacancy):
-    if not vacancy['salary'] or vacancy['salary']['currency'] != 'RUR':
-        return None
-
-    salary_to = vacancy['salary']['to']
-    salary_from = vacancy['salary']['from']
-
+def calculate_avg_salary(salary_from, salary_to):
     if not salary_to:
-        avg_salary = salary_from * 1.2
+        return salary_from * 1.2
     elif not salary_from:
-        avg_salary = salary_to * 0.8
+        return salary_to * 0.8
     else:
-        avg_salary = (salary_from + salary_to) / 2
-
-    return avg_salary
+        return (salary_from + salary_to) / 2
 
 
-def predict_rub_salary_sj(vacancy):
-    salary_to = vacancy['payment_from']
-    salary_from = vacancy['payment_to']
-
-    if salary_to == salary_from == 0:
+def predict_rub_salary_hh(salary_from, salary_to, currency):
+    if currency != 'RUR':
         return None
 
-    if salary_to == 0:
-        avg_salary = salary_from * 1.2
-    elif salary_from == 0:
-        avg_salary = salary_to * 0.8
-    else:
-        avg_salary = (salary_from + salary_to) / 2
+    avg_salary = calculate_avg_salary(salary_from, salary_to)
 
     return avg_salary
 
 
-def find_statistics_vacancies_programmer_hh(town_id, date_from):
+def predict_rub_salary_sj(payment_from, payment_to):
+    if payment_from == 0 and payment_to == 0:
+        return None
+
+    avg_salary = calculate_avg_salary(payment_from, payment_to)
+
+    return avg_salary
+
+
+def find_statistics_vacancy_programmer_hh(town_id, date_from):
     api_url = 'https://api.hh.ru/vacancies'
     programming_languages = ['JavaScript', 'Python', 'TypeScript', 'Java', 'C#',
                              'C++', 'C', 'PHP', 'Go', 'Rust', 'Kotlin', 'Swift']
-    jobs_info = {}
+    jobs_stats = {}
 
     for programming_language in programming_languages:
-        jobs_info[programming_language] = {}
-        predicted_salary, vacancies_processed = 0, 0
+        predicted_salary, vacancies_processed, vacancies_found = 0, 0, 0
 
         page, pages_number = 0, 1
         while page < pages_number:
@@ -62,95 +54,118 @@ def find_statistics_vacancies_programmer_hh(town_id, date_from):
                 page_response = requests.get(api_url, params=payload)
                 page_response.raise_for_status()
 
-                page_data = page_response.json()
-                pages_number = page_data['pages']
+                json_response = page_response.json()
+                pages_number = json_response['pages']
                 page += 1
 
-                predicted_salary_per_page = [predict_rub_salary_hh(vacancy) for vacancy in page_data['items']
-                                             if predict_rub_salary_hh(vacancy)]
-                predicted_salary += sum(predicted_salary_per_page)
-                vacancies_processed += len(predicted_salary_per_page)
+                predicted_salaries_per_page = [
+                    salary for vacancy in json_response['items']
+                    if (salary := predict_rub_salary_hh(
+                        vacancy['salary']['from'] if vacancy.get('salary') else None,
+                        vacancy['salary']['to'] if vacancy.get('salary') else None,
+                        vacancy['salary']['currency'] if vacancy.get('salary') else None
+                    )) and salary != 0
+                ]
+                predicted_salary += sum(predicted_salaries_per_page)
+                vacancies_processed += len(predicted_salaries_per_page)
             except requests.exceptions.HTTPError:
                 time.sleep(1)
             else:
-                vacancies_found = page_data['found']
-                jobs_info[programming_language]['vacancies_found'] = vacancies_found
+                vacancies_found = json_response['found']
 
-        jobs_info[programming_language]['vacancies_processed'] = vacancies_processed
-        average_salary = int(predicted_salary / vacancies_processed) if vacancies_processed > 0 else 0
-        jobs_info[programming_language]['average_salary'] = average_salary
+        average_salary = int(predicted_salary / vacancies_processed) if vacancies_processed else 0
 
-    return jobs_info
+        jobs_stats[programming_language] = {
+            'vacancies_found': vacancies_found,
+            'vacancies_processed': vacancies_processed,
+            'average_salary': average_salary
+        }
+
+    return jobs_stats
 
 
-def find_statistics_vacancies_programmer_sj(api_app_key, town_id):
+def find_statistics_vacancy_programmer_sj(api_app_key, town_id):
     api_url = 'https://api.superjob.ru/2.0/vacancies/'
     headers = {
         'X-Api-App-Id': api_app_key
     }
     programming_languages = ['JavaScript', 'Python', 'TypeScript', 'Java', 'C#',
                              'C++', 'C', 'PHP', 'Go', 'Rust', 'Kotlin', 'Swift']
-    jobs_info = {}
+    jobs_stats = {}
 
     for programming_language in programming_languages:
-        jobs_info[programming_language] = {}
         predicted_salary, vacancies_processed = 0, 0
 
-        page, pages_number = 0, 1
-        while page < pages_number:
+        vacancies_per_page = 40
+        programmer_vacancy_catalogue_id = 48
+
+        page = 0
+        while True:
             try:
                 payload = {
-                    'catalogues': 48,
+                    'catalogues': programmer_vacancy_catalogue_id,
                     'town': town_id,
                     'keyword': programming_language,
                     'page': page,
-                    'count': 40
+                    'count': vacancies_per_page
                 }
                 page_response = requests.get(api_url, headers=headers, params=payload)
                 page_response.raise_for_status()
 
-                page_data = page_response.json()
-                page += 1
-                pages_number = page_data['total'] // 40 + (1 if page_data['total'] % 40 else 0)
+                json_response = page_response.json()
 
-                predicted_salary_per_page = [predict_rub_salary_sj(vacancy) for vacancy in page_data['objects']
-                                             if predict_rub_salary_sj(vacancy)]
-                predicted_salary += sum(predicted_salary_per_page)
-                vacancies_processed += len(predicted_salary_per_page)
+                predicted_salaries_per_page = [
+                    salary for vacancy in json_response['objects']
+                    if (salary := predict_rub_salary_sj(
+                        vacancy['payment_from'],
+                        vacancy['payment_to']
+                    )) and salary != 0
+                ]
+                predicted_salary += sum(predicted_salaries_per_page)
+                vacancies_processed += len(predicted_salaries_per_page)
             except requests.exceptions.HTTPError:
                 time.sleep(1)
             else:
-                vacancies_found = page_data['total']
-                jobs_info[programming_language]['vacancies_found'] = vacancies_found
+                vacancies_found = json_response['total']
 
-        jobs_info[programming_language]['vacancies_processed'] = vacancies_processed
-        average_salary = int(predicted_salary / vacancies_processed) if vacancies_processed > 0 else 0
-        jobs_info[programming_language]['average_salary'] = average_salary
+                page += 1
+                if not json_response['more']:
+                    break
 
-    return jobs_info
+        average_salary = int(predicted_salary / vacancies_processed) if vacancies_processed else 0
+
+        jobs_stats[programming_language] = {
+            'vacancies_found': vacancies_found,
+            'vacancies_processed': vacancies_processed,
+            'average_salary': average_salary
+        }
+
+    return jobs_stats
 
 
-def create_jobs_table(jobs_info, title):
+def create_jobs_table(jobs_stats, title):
     table_data = [
         ['Язык программирования', 'Вакансий найдено', 'Вакансий обработано', 'Средняя зарплата']
     ]
-    for language, lang_info in jobs_info.items():
-        table_data.append([language] + list(lang_info.values()))
+    for language, lang_stats in jobs_stats.items():
+        table_data.append([language] + list(lang_stats.values()))
     jobs_table = SingleTable(table_data, title)
-    print(jobs_table.table)
-    print()
+    return jobs_table.table
 
 
 def main():
     load_dotenv()
 
     one_month_ago = date.today() - timedelta(days=30)
-    jobs_info_hh = find_statistics_vacancies_programmer_hh(1, one_month_ago)
-    create_jobs_table(jobs_info_hh, 'HeadHunter Moscow')
+    hh_moscow_town_id = 1
+    hh_jobs_stats_programmer = find_statistics_vacancy_programmer_hh(hh_moscow_town_id, one_month_ago)
+    print(create_jobs_table(hh_jobs_stats_programmer, 'HeadHunter Moscow'))
+    print()
 
     sj_api_app_key = os.environ['SJ_API_APP_KEY']
-    jobs_info_sj = find_statistics_vacancies_programmer_sj(sj_api_app_key, 4)
-    create_jobs_table(jobs_info_sj, 'SuperJob Moscow')
+    sj_moscow_town_id = 4
+    sj_jobs_stats_programmer = find_statistics_vacancy_programmer_sj(sj_api_app_key, sj_moscow_town_id)
+    print(create_jobs_table(sj_jobs_stats_programmer, 'SuperJob Moscow'))
 
 
 if __name__ == "__main__":
