@@ -33,10 +33,8 @@ def predict_rub_salary_sj(payment_from, payment_to):
     return avg_salary
 
 
-def find_statistics_vacancy_programmer_hh(town_id, date_from):
+def find_statistics_vacancy_programmer_hh(programming_languages, town_id, date_from):
     api_url = 'https://api.hh.ru/vacancies'
-    programming_languages = ['JavaScript', 'Python', 'TypeScript', 'Java', 'C#',
-                             'C++', 'C', 'PHP', 'Go', 'Rust', 'Kotlin', 'Swift']
     jobs_stats = {}
 
     for programming_language in programming_languages:
@@ -53,25 +51,24 @@ def find_statistics_vacancy_programmer_hh(town_id, date_from):
                 }
                 page_response = requests.get(api_url, params=payload)
                 page_response.raise_for_status()
-
-                json_response = page_response.json()
-                pages_number = json_response['pages']
-                page += 1
-
-                predicted_salaries_per_page = [
-                    salary for vacancy in json_response['items']
-                    if (salary := predict_rub_salary_hh(
-                        vacancy['salary']['from'] if vacancy.get('salary') else None,
-                        vacancy['salary']['to'] if vacancy.get('salary') else None,
-                        vacancy['salary']['currency'] if vacancy.get('salary') else None
-                    )) and salary != 0
-                ]
-                predicted_salary += sum(predicted_salaries_per_page)
-                vacancies_processed += len(predicted_salaries_per_page)
             except requests.exceptions.HTTPError:
                 time.sleep(1)
             else:
-                vacancies_found = json_response['found']
+                vacancies_page = page_response.json()
+                pages_number = vacancies_page['pages']
+                page += 1
+
+                predicted_salaries_per_page = []
+                for vacancy in vacancies_page['items']:
+                    if vacancy.get('salary'):
+                        salary = predict_rub_salary_hh(vacancy['salary']['from'], vacancy['salary']['to'],
+                                                       vacancy['salary']['currency'])
+                        if salary:
+                            predicted_salaries_per_page.append(salary)
+
+                predicted_salary += sum(predicted_salaries_per_page)
+                vacancies_processed += len(predicted_salaries_per_page)
+                vacancies_found = vacancies_page['found']
 
         average_salary = int(predicted_salary / vacancies_processed) if vacancies_processed else 0
 
@@ -84,13 +81,11 @@ def find_statistics_vacancy_programmer_hh(town_id, date_from):
     return jobs_stats
 
 
-def find_statistics_vacancy_programmer_sj(api_app_key, town_id):
+def find_statistics_vacancy_programmer_sj(api_app_key, programming_languages, town_id):
     api_url = 'https://api.superjob.ru/2.0/vacancies/'
     headers = {
         'X-Api-App-Id': api_app_key
     }
-    programming_languages = ['JavaScript', 'Python', 'TypeScript', 'Java', 'C#',
-                             'C++', 'C', 'PHP', 'Go', 'Rust', 'Kotlin', 'Swift']
     jobs_stats = {}
 
     for programming_language in programming_languages:
@@ -111,25 +106,23 @@ def find_statistics_vacancy_programmer_sj(api_app_key, town_id):
                 }
                 page_response = requests.get(api_url, headers=headers, params=payload)
                 page_response.raise_for_status()
-
-                json_response = page_response.json()
-
-                predicted_salaries_per_page = [
-                    salary for vacancy in json_response['objects']
-                    if (salary := predict_rub_salary_sj(
-                        vacancy['payment_from'],
-                        vacancy['payment_to']
-                    )) and salary != 0
-                ]
-                predicted_salary += sum(predicted_salaries_per_page)
-                vacancies_processed += len(predicted_salaries_per_page)
             except requests.exceptions.HTTPError:
                 time.sleep(1)
             else:
-                vacancies_found = json_response['total']
+                vacancies_page = page_response.json()
+
+                predicted_salaries_per_page = []
+                for vacancy in vacancies_page['objects']:
+                    salary = predict_rub_salary_sj(vacancy['payment_from'], vacancy['payment_to'])
+                    if salary:
+                        predicted_salaries_per_page.append(salary)
+
+                predicted_salary += sum(predicted_salaries_per_page)
+                vacancies_processed += len(predicted_salaries_per_page)
+                vacancies_found = vacancies_page['total']
 
                 page += 1
-                if not json_response['more']:
+                if not vacancies_page['more']:
                     break
 
         average_salary = int(predicted_salary / vacancies_processed) if vacancies_processed else 0
@@ -156,15 +149,20 @@ def create_jobs_table(jobs_stats, title):
 def main():
     load_dotenv()
 
+    programming_languages = ['JavaScript', 'Python', 'TypeScript', 'Java', 'C#',
+                             'C++', 'C', 'PHP', 'Go', 'Rust', 'Kotlin', 'Swift']
+
     one_month_ago = date.today() - timedelta(days=30)
     hh_moscow_town_id = 1
-    hh_jobs_stats_programmer = find_statistics_vacancy_programmer_hh(hh_moscow_town_id, one_month_ago)
+    hh_jobs_stats_programmer = find_statistics_vacancy_programmer_hh(programming_languages, hh_moscow_town_id,
+                                                                     one_month_ago)
     print(create_jobs_table(hh_jobs_stats_programmer, 'HeadHunter Moscow'))
     print()
 
     sj_api_app_key = os.environ['SJ_API_APP_KEY']
     sj_moscow_town_id = 4
-    sj_jobs_stats_programmer = find_statistics_vacancy_programmer_sj(sj_api_app_key, sj_moscow_town_id)
+    sj_jobs_stats_programmer = find_statistics_vacancy_programmer_sj(sj_api_app_key, programming_languages,
+                                                                     sj_moscow_town_id)
     print(create_jobs_table(sj_jobs_stats_programmer, 'SuperJob Moscow'))
 
 
